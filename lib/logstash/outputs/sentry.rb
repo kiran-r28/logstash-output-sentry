@@ -20,7 +20,9 @@ require "yaml"
 #   sentry{
 #     dsn_key_file => "path_to_dsn_key_file" (required)
 #     project_id => "project_id"             (required)
-#     tags => {                              (optional, default = {})
+#     current_environment => "production"    (optional, default - "default")
+#     environments => []                     (optional, default - [])
+#     tags => {                              (optional, default - {})
 #       "key" => "value"
 #       "key" => "value"
 #     }
@@ -35,13 +37,15 @@ require "yaml"
 class LogStash::Outputs::Sentry < LogStash::Outputs::Base
   config_name "sentry"
 
-  config :dsn_key_file, :validate => :string,  :required => true
-  config :project_id,   :validate => :string,  :required => true
-  config :message,      :validate => :string,  :required => false, :default => 'Logstash default message'
-  config :tags,         :validate => :hash,    :required => false, :default => {}
-  config :level,        :validate => :string,  :required => false, :default => 'error'
-  config :host,         :validate => :string,  :required => false, :default => 'sentry.io'
-  config :enable_ssl,   :validate => :boolean, :required => false, :default => true
+  config :dsn_key_file,         :validate => :string,  :required => true
+  config :project_id,           :validate => :string,  :required => true
+  config :message,              :validate => :string,  :required => false, :default => 'Logstash default message'
+  config :tags,                 :validate => :hash,    :required => false, :default => {}
+  config :current_environment,  :validate => :string,  :required => false, :default => 'default'
+  config :environments,         :validate => :array,   :required => false, :default => []
+  config :level,                :validate => :string,  :required => false, :default => 'error'
+  config :host,                 :validate => :string,  :required => false, :default => 'sentry.io'
+  config :enable_ssl,           :validate => :boolean, :required => false, :default => true
 
   public
   def register
@@ -56,11 +60,17 @@ class LogStash::Outputs::Sentry < LogStash::Outputs::Base
 
     protocol = @enable_ssl? 'https' : 'http'
 
-    dsn = "#{protocol}://#{dsn_keys['public_key']}:#{dsn_keys['secret_key']}@#{@host}/#{@project_id}"
+    dsn = "#{protocol}://#{public_key}:#{secret_key}@#{@host}/#{@project_id}"
 
     Raven.configure do |config|
       config.dsn = dsn
       config.open_timeout = 20
+			config.timeout = 20
+			config.current_environment = @current_environment
+			config.environments = @environments
+			config.transport_failure_callback = lambda { |event|
+				@logger.error("Exception sending event")
+			}
     end
 
     @logger.info("Configured sentry with", :project_id => @project_id)
@@ -68,7 +78,15 @@ class LogStash::Outputs::Sentry < LogStash::Outputs::Base
 
   public
   def receive(event)
-    Raven.capture_message(@message, :extra => event, :level => @level, :tags => @tags)
+		message = event.sprintf(@message);
+
+		tags = Hash.new()
+		@tags.each do |key, value|
+			interpolatedValue = event.sprintf(value)
+			tags.store(key, interpolatedValue)
+		end
+
+    Raven.capture_message(message, :extra => event, :level => @level, :tags => tags)
     return "Event received"
   end
 end
